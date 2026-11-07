@@ -1,3 +1,4 @@
+
 name: build
 
 on:
@@ -10,76 +11,105 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle 8.5
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.5'
 
-      - name: Verify and locate source files
+      - name: Prepare Java source folders
         shell: bash
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
 
-          echo "Repository root: $GITHUB_WORKSPACE"
-          echo "Top-level files:"
-          ls -la
+          echo "Preparing project..."
 
-          test -f build.gradle || { echo 'ERROR: build.gradle is missing from repository root'; exit 1; }
-          test -f settings.gradle || { echo 'ERROR: settings.gradle is missing from repository root'; exit 1; }
-          test -f gradle.properties || { echo 'ERROR: gradle.properties is missing from repository root'; exit 1; }
+          mkdir -p src/main/java
+          mkdir -p src/main/resources/assets/mymod/lang
 
-          # Find Java source files even when GitHub has an extra enclosing folder.
-          JAVA_DIR=""
-          while IFS= read -r candidate; do
-            if find "$candidate" -type f -name '*.java' -print -quit | grep -q .; then
-              JAVA_DIR="$candidate"
-              break
+          # Find Java files and place them according to package declarations.
+          while IFS= read -r -d '' file; do
+
+            package_name=$(sed -nE \
+              's/^[[:space:]]*package[[:space:]]+([[:alnum:]_.]+)[[:space:]]*;.*/\1/p' \
+              "$file" | head -n 1)
+
+            if [ -n "$package_name" ]; then
+              package_path="${package_name//.//}"
+              destination="src/main/java/$package_path/$(basename "$file")"
+            else
+              destination="src/main/java/$(basename "$file")"
             fi
-          done < <(find . -type d -path '*/src/main/java' \
-            -not -path './.git/*' \
-            -not -path './.gradle/*' \
-            -not -path '*/build/*' | sort)
 
-          if [ -z "$JAVA_DIR" ]; then
-            echo 'ERROR: No Java source directory containing .java files was found.'
-            echo 'Java files currently present:'
-            find . -type f -name '*.java' -not -path './.git/*' -print || true
-            echo 'Repository directories:'
-            find . -maxdepth 5 -type d -not -path './.git*' -print | sort
-            exit 1
-          fi
+            mkdir -p "$(dirname "$destination")"
+            cp "$file" "$destination"
 
-          SOURCE_ROOT="${JAVA_DIR%/main/java}"
-          echo "Found Java sources: $JAVA_DIR"
+            echo "Prepared: $destination"
 
-          # Gradle is launched from the repository root, so normalize nested src/ to ./src/.
-          if [ "$SOURCE_ROOT" != './src' ]; then
-            echo "Moving source tree from $SOURCE_ROOT to ./src"
-            rm -rf ./src
-            mkdir -p ./src
-            cp -a "$SOURCE_ROOT"/. ./src/
-          fi
+          done < <(find . -type f -name '*.java' \
+            ! -path './.git/*' \
+            ! -path './.gradle/*' \
+            ! -path './build/*' \
+            ! -path './src/main/java/*' \
+            -print0)
 
-          test -n "$(find src/main/java -type f -name '*.java' -print -quit)" || {
-            echo 'ERROR: src/main/java still contains no Java files after normalization';
-            exit 1;
+          # Copy Fabric resources.
+          copy_resource() {
+            local name="$1"
+            local destination="$2"
+
+            if [ -f "$destination" ]; then
+              return
+            fi
+
+            local source
+            source=$(find . -type f -name "$name" \
+              ! -path './.git/*' \
+              ! -path './build/*' \
+              -print -quit)
+
+            if [ -n "$source" ]; then
+              mkdir -p "$(dirname "$destination")"
+              cp "$source" "$destination"
+              echo "Resource copied: $name"
+            fi
           }
-          echo 'Gradle project structure looks correct.'
 
-      - name: Build Fabric mod
+          copy_resource "fabric.mod.json" \
+            "src/main/resources/fabric.mod.json"
+
+          copy_resource "my-mod.mixins.json" \
+            "src/main/resources/my-mod.mixins.json"
+
+          copy_resource "en_us.json" \
+            "src/main/resources/assets/mymod/lang/en_us.json"
+
+          # Verify project structure.
+          test -f build.gradle
+          test -f settings.gradle
+          test -f gradle.properties
+
+          test -f src/main/resources/fabric.mod.json
+          test -f src/main/resources/my-mod.mixins.json
+
+          test -n "$(find src/main/java -name '*.java' -print -quit)"
+
+          echo "Source files prepared successfully."
+
+      - name: Build Fabric Mod
         run: gradle --no-daemon clean build --stacktrace
 
-      - name: Upload mod JAR
+      - name: Upload Mod JAR
         uses: actions/upload-artifact@v4
         with:
           name: mymod-jar
