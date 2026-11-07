@@ -1,0 +1,47 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.5
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Verify Gradle project files
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Repository root: $GITHUB_WORKSPACE"
+          test -f build.gradle || { echo 'ERROR: build.gradle is missing from repository root'; exit 1; }
+          test -f settings.gradle || { echo 'ERROR: settings.gradle is missing from repository root'; exit 1; }
+          test -f gradle.properties || { echo 'ERROR: gradle.properties is missing from repository root'; exit 1; }
+          test -d src/main/java || { echo 'ERROR: src/main/java is missing'; exit 1; }
+          echo 'Gradle project structure looks correct.'
+
+      - name: Build Fabric mod
+        run: gradle --no-daemon clean build --stacktrace
+
+      - name: Upload mod JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: mymod-jar
+          path: build/libs/*.jar
+          if-no-files-found: error
