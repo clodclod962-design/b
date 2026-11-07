@@ -25,15 +25,55 @@ jobs:
         with:
           gradle-version: '8.5'
 
-      - name: Verify Gradle project files
+      - name: Verify and locate source files
         shell: bash
         run: |
           set -euo pipefail
+
           echo "Repository root: $GITHUB_WORKSPACE"
+          echo "Top-level files:"
+          ls -la
+
           test -f build.gradle || { echo 'ERROR: build.gradle is missing from repository root'; exit 1; }
           test -f settings.gradle || { echo 'ERROR: settings.gradle is missing from repository root'; exit 1; }
           test -f gradle.properties || { echo 'ERROR: gradle.properties is missing from repository root'; exit 1; }
-          test -d src/main/java || { echo 'ERROR: src/main/java is missing'; exit 1; }
+
+          # Find Java source files even when GitHub has an extra enclosing folder.
+          JAVA_DIR=""
+          while IFS= read -r candidate; do
+            if find "$candidate" -type f -name '*.java' -print -quit | grep -q .; then
+              JAVA_DIR="$candidate"
+              break
+            fi
+          done < <(find . -type d -path '*/src/main/java' \
+            -not -path './.git/*' \
+            -not -path './.gradle/*' \
+            -not -path '*/build/*' | sort)
+
+          if [ -z "$JAVA_DIR" ]; then
+            echo 'ERROR: No Java source directory containing .java files was found.'
+            echo 'Java files currently present:'
+            find . -type f -name '*.java' -not -path './.git/*' -print || true
+            echo 'Repository directories:'
+            find . -maxdepth 5 -type d -not -path './.git*' -print | sort
+            exit 1
+          fi
+
+          SOURCE_ROOT="${JAVA_DIR%/main/java}"
+          echo "Found Java sources: $JAVA_DIR"
+
+          # Gradle is launched from the repository root, so normalize nested src/ to ./src/.
+          if [ "$SOURCE_ROOT" != './src' ]; then
+            echo "Moving source tree from $SOURCE_ROOT to ./src"
+            rm -rf ./src
+            mkdir -p ./src
+            cp -a "$SOURCE_ROOT"/. ./src/
+          fi
+
+          test -n "$(find src/main/java -type f -name '*.java' -print -quit)" || {
+            echo 'ERROR: src/main/java still contains no Java files after normalization';
+            exit 1;
+          }
           echo 'Gradle project structure looks correct.'
 
       - name: Build Fabric mod
